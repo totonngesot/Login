@@ -1,0 +1,8 @@
+brotli
+chardet
+colorama
+fake_useragent
+psutil
+requests
+urllib3
+websocket
