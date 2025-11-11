@@ -1,0 +1,8 @@
+{
+    "daily": true,
+    "reff_code": "ii_5438209644",
+    "thread": 1,
+    "proxy": false,
+    "delay_account_switch": 10,
+    "delay_loop": 3000
+}
