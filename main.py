@@ -900,147 +900,146 @@ class signton:
 
     def daily(self) -> None:
         """
-        1) POST sign/claimList (no payload) -> show list summary
-        2) POST sign/randomTon (no payload) -> show result message
-        3) POST user/info (no payload) -> show important user fields
+        Flow:
+        1) POST sign/signCheck (no payload)
+        - if code == 1 -> success, continue to claim
+        - if code == 3 and msg == "Signed in" -> already claimed today
+        - if code == 3 and msg indicates missing wallet -> set wallet then retry signCheck
+        - otherwise -> log and exit
+        2) If signCheck successful, POST sign/claim with year/month/day from signCheck data
         """
-        self.log("📅 Running daily tasks...", Fore.GREEN)
+        self.log(
+            "📅 Running daily tasks... (signCheck -> set wallet if needed -> claim)",
+            Fore.GREEN,
+        )
+        sign_resp = None
         try:
-            claim_resp = None
+            self.log("📡 Requesting sign/signCheck...", Fore.CYAN)
+            sign_resp, sign_data = self._request(
+                "POST", "sign/signCheck", timeout=DEFAULT_TIMEOUT, parse=True, retries=1
+            )
+            if not isinstance(sign_data, dict):
+                raise ValueError("sign/signCheck response not parsed as JSON/dict")
+            code = sign_data.get("code")
+            msg = sign_data.get("msg", "")
+            if code == 3 and msg.strip().lower() == "signed in":
+                self.log("✅ Already signed in today.", Fore.GREEN)
+                return
+            if code == 1:
+                self.log("✅ sign/signCheck returned success.", Fore.CYAN)
+                signcheck_success = sign_data.get("data", {}) or {}
+            elif code == 3 and "wallet" in msg.lower():
+                self.log(f"⚠️ sign/signCheck returned code=3 msg={msg}", Fore.YELLOW)
+                wallet = self.config.get("ton_address")
+                if not wallet:
+                    self.log(
+                        "❌ No wallet in self.config['ton_address'] — cannot set wallet.",
+                        Fore.RED,
+                    )
+                    return
+                set_resp = None
+                try:
+                    self.log(
+                        "📡 Attempting to set wallet via user/setWalletAddress...",
+                        Fore.CYAN,
+                    )
+                    set_resp, set_data = self._request(
+                        "POST",
+                        "user/setWalletAddress",
+                        data={"wallet_address": wallet},
+                        timeout=DEFAULT_TIMEOUT,
+                        parse=True,
+                        retries=1,
+                    )
+                    if not isinstance(set_data, dict):
+                        raise ValueError(
+                            "user/setWalletAddress response not parsed as JSON/dict"
+                        )
+                    if set_data.get("code") != 1:
+                        self.log(
+                            f"❌ user/setWalletAddress failed code={set_data.get('code')} msg={set_data.get('msg')}",
+                            Fore.RED,
+                        )
+                        return
+                    else:
+                        self.log("✅ user/setWalletAddress succeeded.", Fore.CYAN)
+                    self.log(
+                        "📡 Re-requesting sign/signCheck after setting wallet...",
+                        Fore.CYAN,
+                    )
+                    sign_resp, sign_data = self._request(
+                        "POST",
+                        "sign/signCheck",
+                        timeout=DEFAULT_TIMEOUT,
+                        parse=True,
+                        retries=1,
+                    )
+                    if not isinstance(sign_data, dict):
+                        raise ValueError(
+                            "sign/signCheck (retry) response not parsed as JSON/dict"
+                        )
+                    code = sign_data.get("code")
+                    msg = sign_data.get("msg", "")
+                    if code != 1:
+                        self.log(
+                            f"❌ sign/signCheck retry returned code={code} msg={msg}",
+                            Fore.RED,
+                        )
+                        return
+                    else:
+                        self.log("✅ sign/signCheck retry succeeded.", Fore.CYAN)
+                        signcheck_success = sign_data.get("data", {}) or {}
+                except Exception as e:
+                    self.log(
+                        f"❌ Error processing user/setWalletAddress or retry: {e}",
+                        Fore.RED,
+                    )
+                    return
+            else:
+                self.log(
+                    f"⚠️ sign/signCheck returned code={code} msg={msg}", Fore.YELLOW
+                )
+                return
+            status = signcheck_success.get("status", "N/A")
+            sign_points = signcheck_success.get("sign_points", "N/A")
+            month = signcheck_success.get("month")
+            day = signcheck_success.get("day")
+            self.log("🔎 sign/signCheck result:", Fore.GREEN)
+            self.log(f"    - Status: {status}", Fore.CYAN)
+            self.log(f"    - Sign Points: {sign_points}", Fore.CYAN)
+            self.log(f"    - Month: {month}", Fore.CYAN)
+            self.log(f"    - Day: {day}", Fore.CYAN)
+            year = str(datetime.now().year)
+            if not month or not day:
+                now = datetime.now()
+                month, day = (now.month, now.day)
             try:
-                self.log("📡 Requesting sign/claimList...", Fore.CYAN)
+                self.log("📡 Requesting sign/claim...", Fore.CYAN)
                 claim_resp, claim_data = self._request(
                     "POST",
-                    "sign/claimList",
+                    "sign/claim",
+                    data={"year": str(year), "month": str(month), "day": str(day)},
                     timeout=DEFAULT_TIMEOUT,
                     parse=True,
                     retries=1,
                 )
                 if not isinstance(claim_data, dict):
-                    raise ValueError("claimList response not parsed as JSON/dict")
-                code = claim_data.get("code")
-                if code != 1:
+                    raise ValueError("sign/claim response not parsed as JSON/dict")
+                claim_code = claim_data.get("code")
+                if claim_code == 1:
+                    countdown = claim_data.get("data", {}).get("countdown", "N/A")
                     self.log(
-                        f"⚠️ sign/claimList returned code={code} msg={claim_data.get('msg')}",
+                        f"🎉 sign/claim success — countdown: {countdown}", Fore.CYAN
+                    )
+                else:
+                    self.log(
+                        f"⚠️ sign/claim returned code={claim_code} msg={claim_data.get('msg')}",
                         Fore.YELLOW,
                     )
-                else:
-                    lst = claim_data.get("data", {}).get("list", [])
-                    try:
-                        length = len(lst)
-                    except Exception:
-                        length = "N/A"
-                    self.log(f"🗂️ ClaimList items: {length}", Fore.CYAN)
-                    if length:
-                        preview = lst[:5]
-                        self.log(f"    - Preview: {preview}", Fore.CYAN)
-            except requests.exceptions.RequestException as e:
-                self.log(f"❌ Failed to fetch sign/claimList: {e}", Fore.RED)
-                if claim_resp is not None:
-                    try:
-                        self.log(f"📄 Response content: {claim_resp.text}", Fore.RED)
-                    except Exception:
-                        pass
             except Exception as e:
-                self.log(f"❌ Error processing sign/claimList: {e}", Fore.RED)
-                if claim_resp is not None:
-                    try:
-                        self.log(f"📄 Response content: {claim_resp.text}", Fore.RED)
-                    except Exception:
-                        pass
-            random_resp = None
-            try:
-                self.log("📡 Requesting sign/randomTon...", Fore.CYAN)
-                random_resp, random_data = self._request(
-                    "POST",
-                    "sign/randomTon",
-                    timeout=DEFAULT_TIMEOUT,
-                    parse=True,
-                    retries=1,
-                )
-                if not isinstance(random_data, dict):
-                    raise ValueError("randomTon response not parsed as JSON/dict")
-                code = random_data.get("code")
-                msg = random_data.get("msg", "")
-                if code != 1:
-                    self.log(
-                        f"⚠️ sign/randomTon returned code={code} msg={msg}", Fore.YELLOW
-                    )
-                else:
-                    self.log(f"🎲 randomTon: {msg or 'success'}", Fore.CYAN)
-                    data = random_data.get("data", {})
-                    if data:
-                        keys = ", ".join(list(data.keys()))
-                        self.log(f"    - Data keys: {keys}", Fore.CYAN)
-            except requests.exceptions.RequestException as e:
-                self.log(f"❌ Failed to call sign/randomTon: {e}", Fore.RED)
-                if random_resp is not None:
-                    try:
-                        self.log(f"📄 Response content: {random_resp.text}", Fore.RED)
-                    except Exception:
-                        pass
-            except Exception as e:
-                self.log(f"❌ Error processing sign/randomTon: {e}", Fore.RED)
-                if random_resp is not None:
-                    try:
-                        self.log(f"📄 Response content: {random_resp.text}", Fore.RED)
-                    except Exception:
-                        pass
-            info_resp = None
-            try:
-                self.log("📡 Requesting user/info...", Fore.CYAN)
-                info_resp, info_data = self._request(
-                    "POST", "user/info", timeout=DEFAULT_TIMEOUT, parse=True, retries=1
-                )
-                if not isinstance(info_data, dict):
-                    raise ValueError("user/info response not parsed as JSON/dict")
-                code = info_data.get("code")
-                if code != 1:
-                    self.log(
-                        f"⚠️ user/info returned code={code} msg={info_data.get('msg')}",
-                        Fore.YELLOW,
-                    )
-                else:
-                    data = info_data.get("data", {}) or {}
-                    tg_id = data.get("tg_id", "N/A")
-                    first_name = data.get("first_name", "")
-                    last_name = data.get("last_name", "")
-                    username = data.get("username", "N/A")
-                    points = data.get("points", "N/A")
-                    wallet = data.get("wallet_address", "")
-                    login_day = data.get("login_day", "N/A")
-                    avatar = data.get("avatar", "")
-                    cfg = data.get("config", {}) or {}
-                    new_user_points = cfg.get("new_user_points", "N/A")
-                    self.log("👤 User Info Summary:", Fore.GREEN)
-                    self.log(f"    - Username: {username}", Fore.CYAN)
-                    if first_name or last_name:
-                        self.log(
-                            f"    - Name: {first_name} {last_name}".strip(), Fore.CYAN
-                        )
-                    self.log(f"    - Telegram ID: {tg_id}", Fore.CYAN)
-                    self.log(f"    - Points: {points}", Fore.CYAN)
-                    self.log(f"    - Wallet: {wallet or 'N/A'}", Fore.CYAN)
-                    self.log(f"    - Login Day: {login_day}", Fore.CYAN)
-                    self.log(
-                        f"    - New User Points (config): {new_user_points}", Fore.CYAN
-                    )
-                    if avatar:
-                        self.log(f"    - Avatar URL: {avatar}", Fore.CYAN)
-            except requests.exceptions.RequestException as e:
-                self.log(f"❌ Failed to fetch user/info: {e}", Fore.RED)
-                if info_resp is not None:
-                    try:
-                        self.log(f"📄 Response content: {info_resp.text}", Fore.RED)
-                    except Exception:
-                        pass
-            except Exception as e:
-                self.log(f"❌ Error processing user/info: {e}", Fore.RED)
-                if info_resp is not None:
-                    try:
-                        self.log(f"📄 Response content: {info_resp.text}", Fore.RED)
-                    except Exception:
-                        pass
+                self.log(f"❌ Error processing sign/claim: {e}", Fore.RED)
+        except Exception as e:
+            self.log(f"❌ Error in daily flow: {e}", Fore.RED)
         finally:
             try:
                 self.clear_locals()
